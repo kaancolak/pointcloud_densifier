@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="2">
+    <name>pointcloud_densifier</name>
+    <version>2.0.0</version>
+    <description>Enhances sparse point cloud data by leveraging information from previous LiDAR frames, creating a denser and more detailed representation of the environment</description>
+
+    <maintainer email="kaan.colak.dev@gmail.com">Kaan Colak</maintainer>
+    <license>Apache License 2.0</license>
+
+    <buildtool_depend>ament_cmake_auto</buildtool_depend>
+    <buildtool_depend>autoware_cmake</buildtool_depend>
+
+  <depend>autoware_perception_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>pcl_conversions</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tier4_perception_msgs</depend>
+
+  <test_depend>autoware_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
