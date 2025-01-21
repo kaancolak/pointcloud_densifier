@@ -51,16 +51,30 @@
 
 namespace pointcloud_densifier
 {
-
 PointCloudDensifierNode::PointCloudDensifierNode(const rclcpp::NodeOptions & options)
-: rclcpp::Node("pointcloud_densifier_node", options)
+: rclcpp::Node("pointcloud_densifier_node", options),
+  tf_buffer_(std::make_shared<tf2_ros::Buffer>(this->get_clock())),
+  tf_listener_(std::make_shared<tf2_ros::TransformListener>(*tf_buffer_))
 {
-
   using std::placeholders::_1;
   pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
     "input", rclcpp::SensorDataQoS().keep_last(1),
     std::bind(&PointCloudDensifierNode::onPointCloud, this, _1));
 
+  pointcloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("output", 10);
+
+  // Declare and get the parameter for the number of previous frames
+  this->declare_parameter<int>("num_previous_frames", 1);
+  this->declare_parameter<double>("x_min", 80.0);
+  this->declare_parameter<double>("x_max",  200.0);
+  this->declare_parameter<double>("y_min", -20.0);
+  this->declare_parameter<double>("y_max",  20.0);
+
+  num_previous_frames_ = this->get_parameter("num_previous_frames").as_int();
+  x_min_ = this->get_parameter("x_min").as_double();
+  x_max_ = this->get_parameter("x_max").as_double();
+  y_min_ = this->get_parameter("y_min").as_double();
+  y_max_ = this->get_parameter("y_max").as_double();
 }
 
 void PointCloudDensifierNode::onPointCloud(
@@ -70,7 +84,100 @@ void PointCloudDensifierNode::onPointCloud(
   pcl::PointCloud<pcl::PointXYZ>::Ptr raw_pointcloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::fromROSMsg(*input_msg, *raw_pointcloud_ptr);
 
+  pcl::PointCloud<pcl::PointXYZ>::Ptr combined_pointcloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+  *combined_pointcloud_ptr = *raw_pointcloud_ptr;
+
   RCLCPP_INFO(get_logger(), "Received point cloud with %ld points", raw_pointcloud_ptr->size());
+
+  // Transform and combine previous point clouds
+  for (const auto & previous_pointcloud : previous_pointclouds_) {
+    if (!previous_pointcloud.cloud || previous_pointcloud.cloud->empty()) {
+      continue;
+    }
+    geometry_msgs::msg::TransformStamped transform_stamped;
+    try {
+      // Convert timestamps to tf2 time
+      tf2::TimePoint time_point = tf2::TimePoint(
+        std::chrono::nanoseconds(input_msg->header.stamp.nanosec) +
+        std::chrono::seconds(input_msg->header.stamp.sec));
+      tf2::TimePoint prev_time_point = tf2::TimePoint(
+        std::chrono::nanoseconds(previous_pointcloud.header.stamp.nanosec) +
+        std::chrono::seconds(previous_pointcloud.header.stamp.sec));
+
+      transform_stamped = tf_buffer_->lookupTransform(
+        input_msg->header.frame_id,
+        time_point,
+        previous_pointcloud.header.frame_id,
+        prev_time_point,
+        "map"  // fixed frame
+      );
+    } catch (tf2::TransformException & ex) {
+      RCLCPP_WARN(this->get_logger(), "%s", ex.what());
+      continue;
+    }
+
+
+    // Log transform stamped  
+    RCLCPP_INFO(this->get_logger(), "Transformed point cloud from %s to %s",
+      previous_pointcloud.header.frame_id.c_str(), input_msg->header.frame_id.c_str());
+    RCLCPP_INFO(this->get_logger(), "Translation: [%f, %f, %f]",
+      transform_stamped.transform.translation.x,
+      transform_stamped.transform.translation.y,
+      transform_stamped.transform.translation.z);
+
+
+    // Check if transform is valid
+    Eigen::Isometry3d transform_eigen;
+    try {
+      transform_eigen = tf2::transformToEigen(transform_stamped);
+      if (!transform_eigen.matrix().allFinite()) {
+        RCLCPP_WARN(get_logger(), "Invalid transform matrix, skipping point cloud");
+        continue;
+      }
+    } catch (const std::exception & ex) {
+      RCLCPP_ERROR(get_logger(), "Transform error: %s", ex.what());
+      continue;
+    }
+
+    // Transform and filter previous point cloud
+    pcl::PointCloud<pcl::PointXYZ> transformed_previous_cloud;
+    try {
+      pcl::transformPointCloud(*previous_pointcloud.cloud, transformed_previous_cloud, transform_eigen.matrix());
+    } catch (const std::exception & ex) {
+      RCLCPP_ERROR(get_logger(), "Point cloud transformation failed: %s", ex.what());
+      continue;
+    }
+    *combined_pointcloud_ptr += transformed_previous_cloud;
+  }
+
+  // Store the current point cloud for future use
+  if (previous_pointclouds_.size() >= num_previous_frames_) {
+    previous_pointclouds_.pop_front();
+  }
+
+  // Filter the point cloud
+  pcl::PointCloud<pcl::PointXYZ>::Ptr far_front_pointcloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+  for (const auto & point : raw_pointcloud_ptr->points) {
+    if (point.x > x_min_ && point.x < x_max_ && point.y > y_min_ && point.y < y_max_) {
+      far_front_pointcloud_ptr->push_back(point);
+    }
+  }
+
+  StoredPointCloud current_pointcloud;
+  current_pointcloud.cloud = far_front_pointcloud_ptr;
+  current_pointcloud.header = input_msg->header;
+
+  // Store the current point cloud for future use
+  previous_pointclouds_.push_back(current_pointcloud);
+
+  // Convert pcl to ros
+  sensor_msgs::msg::PointCloud2 output_msg;
+  pcl::toROSMsg(*combined_pointcloud_ptr, output_msg);
+  output_msg.header = input_msg->header;
+
+  // Publish the combined point cloud
+  pointcloud_pub_->publish(output_msg);
+  RCLCPP_INFO(get_logger(), "Published point cloud with %ld points", combined_pointcloud_ptr->size());
 }
 }  
 

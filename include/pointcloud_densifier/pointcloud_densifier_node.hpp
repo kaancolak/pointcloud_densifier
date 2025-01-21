@@ -1,83 +1,53 @@
-// Copyright 2020 Tier IV, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-/*
- *
- * Software License Agreement (BSD License)
- *
- *  Copyright (c) 2010, Willow Garage, Inc.
- *  All rights reserved.
- *
- *  Redistribution and use in source and binary forms, with or without
- *  modification, are permitted provided that the following conditions
- *  are met:
- *
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above
- *     copyright notice, this list of conditions and the following
- *     disclaimer in the documentation and/or other materials provided
- *     with the distribution.
- *   * Neither the name of Willow Garage, Inc. nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- *  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- *  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- *  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- *  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- *  POSSIBILITY OF SUCH DAMAGE.
- *
- */
-
 #ifndef POINTCLOUD_DENSIFIER__POINTCLOUD_DENSIFIER_NODE_HPP_
 #define POINTCLOUD_DENSIFIER__POINTCLOUD_DENSIFIER_NODE_HPP_
 
-#include <rclcpp/rclcpp.hpp>
+#include <deque>
+#include <memory>
+#include <string>
 
-#include <sensor_msgs/msg/point_cloud2.hpp>
-
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
-
-#include <chrono>
-#include <memory>
+#include "pcl_ros/transforms.hpp"
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
+#include <tf2_eigen/tf2_eigen.h>
+#include <Eigen/Geometry>
 
 namespace pointcloud_densifier
 {
 
-//! \brief The PointCloudDensifierNode class to enrich incoming point cloud for long range.
-//!
+struct StoredPointCloud {
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
+  std_msgs::msg::Header header;
+};
+
 class PointCloudDensifierNode : public rclcpp::Node
 {
 public:
   explicit PointCloudDensifierNode(const rclcpp::NodeOptions & options);
 
-  ~PointCloudDensifierNode() override;
-
 private:
-  void onPointCloud(sensor_msgs::msg::PointCloud2::ConstSharedPtr input_msg);
+  void onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr input_msg);
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_pub_;
 
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+  std::deque<StoredPointCloud> previous_pointclouds_;
+  int num_previous_frames_;
+  double x_min_;
+  double x_max_;
+  double y_min_;
+  double y_max_;
+  
 };
-}  
-#endif  
+
+}  // namespace pointcloud_densifier
+
+#endif  // POINTCLOUD_DENSIFIER__POINTCLOUD_DENSIFIER_NODE_HPP_
