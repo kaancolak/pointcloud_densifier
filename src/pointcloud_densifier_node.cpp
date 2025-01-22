@@ -81,10 +81,10 @@ void PointCloudDensifierNode::onPointCloud(
   const sensor_msgs::msg::PointCloud2::ConstSharedPtr input_msg)
 {
   // convert ros to pcl
-  pcl::PointCloud<pcl::PointXYZ>::Ptr raw_pointcloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<PointXYZIRC>::Ptr raw_pointcloud_ptr(new pcl::PointCloud<PointXYZIRC>);
   pcl::fromROSMsg(*input_msg, *raw_pointcloud_ptr);
 
-  pcl::PointCloud<pcl::PointXYZ>::Ptr combined_pointcloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<PointXYZIRC>::Ptr combined_pointcloud_ptr(new pcl::PointCloud<PointXYZIRC>);
   *combined_pointcloud_ptr = *raw_pointcloud_ptr;
 
   RCLCPP_INFO(get_logger(), "Received point cloud with %ld points", raw_pointcloud_ptr->size());
@@ -140,9 +140,9 @@ void PointCloudDensifierNode::onPointCloud(
     }
 
     // Transform and filter previous point cloud
-    pcl::PointCloud<pcl::PointXYZ> transformed_previous_cloud;
+    pcl::PointCloud<PointXYZIRC> transformed_previous_cloud;
     try {
-      pcl::transformPointCloud(*previous_pointcloud.cloud, transformed_previous_cloud, transform_eigen.matrix());
+      PointCloudDensifierNode::transformPointCloudXYZIRC(*previous_pointcloud.cloud, transformed_previous_cloud, transform_eigen.matrix());
     } catch (const std::exception & ex) {
       RCLCPP_ERROR(get_logger(), "Point cloud transformation failed: %s", ex.what());
       continue;
@@ -156,7 +156,7 @@ void PointCloudDensifierNode::onPointCloud(
   }
 
   // Filter the point cloud
-  pcl::PointCloud<pcl::PointXYZ>::Ptr far_front_pointcloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<PointXYZIRC>::Ptr far_front_pointcloud_ptr(new pcl::PointCloud<PointXYZIRC>);
   for (const auto & point : raw_pointcloud_ptr->points) {
     if (point.x > x_min_ && point.x < x_max_ && point.y > y_min_ && point.y < y_max_) {
       far_front_pointcloud_ptr->push_back(point);
@@ -179,6 +179,29 @@ void PointCloudDensifierNode::onPointCloud(
   pointcloud_pub_->publish(output_msg);
   RCLCPP_INFO(get_logger(), "Published point cloud with %ld points", combined_pointcloud_ptr->size());
 }
+
+void PointCloudDensifierNode::transformPointCloudXYZIRC(
+  const pcl::PointCloud<PointXYZIRC>& cloud_in,
+  pcl::PointCloud<PointXYZIRC>& cloud_out,
+  const Eigen::Matrix4d& transform
+) {
+  cloud_out.points.resize(cloud_in.points.size());
+  for (size_t i = 0; i < cloud_in.points.size(); ++i) {
+    const auto& point_in = cloud_in.points[i];
+    auto& point_out = cloud_out.points[i];
+    
+    Eigen::Vector4d pt(point_in.x, point_in.y, point_in.z, 1.0);
+    pt = transform * pt;
+    
+    point_out.x = pt[0];
+    point_out.y = pt[1];
+    point_out.z = pt[2];
+    point_out.intensity = point_in.intensity;
+    point_out.return_type = point_in.return_type;
+    point_out.channel = point_in.channel;
+  }
+}
+
 }  
 
 #include "rclcpp_components/register_node_macro.hpp"

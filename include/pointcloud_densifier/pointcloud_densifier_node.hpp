@@ -16,12 +16,15 @@
 #include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 #include <tf2_eigen/tf2_eigen.h>
 #include <Eigen/Geometry>
+#include "autoware_point_types/types.hpp"
 
 namespace pointcloud_densifier
 {
 
+using autoware_point_types::PointXYZIRC;  
+
 struct StoredPointCloud {
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
+  pcl::PointCloud<PointXYZIRC>::Ptr cloud;
   std_msgs::msg::Header header;
 };
 
@@ -32,6 +35,9 @@ public:
 
 private:
   void onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr input_msg);
+
+  void transformPointCloudXYZIRC(const pcl::PointCloud<PointXYZIRC>& cloud_in,
+  pcl::PointCloud<PointXYZIRC>& cloud_out,const Eigen::Matrix4d& transform );
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_pub_;
