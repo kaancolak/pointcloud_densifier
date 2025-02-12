@@ -48,9 +48,11 @@
  */
 
 #include "pointcloud_densifier/pointcloud_densifier_node.hpp"
+#include "pointcloud_densifier/occupancy_grid.hpp"  // new include
 
 namespace pointcloud_densifier
 {
+
 PointCloudDensifierNode::PointCloudDensifierNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("pointcloud_densifier_node", options),
   tf_buffer_(std::make_shared<tf2_ros::Buffer>(this->get_clock())),
@@ -63,47 +65,67 @@ PointCloudDensifierNode::PointCloudDensifierNode(const rclcpp::NodeOptions & opt
 
   pointcloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("output", 10);
 
-  // Declare and get the parameter for the number of previous frames
+  // Declare and get parameters (note the new grid_resolution parameter)
   this->declare_parameter<int>("num_previous_frames", 1);
   this->declare_parameter<double>("x_min", 80.0);
-  this->declare_parameter<double>("x_max",  200.0);
+  this->declare_parameter<double>("x_max", 200.0);
   this->declare_parameter<double>("y_min", -20.0);
-  this->declare_parameter<double>("y_max",  20.0);
+  this->declare_parameter<double>("y_max", 20.0);
+  this->declare_parameter<double>("grid_resolution", 0.30);
 
   num_previous_frames_ = this->get_parameter("num_previous_frames").as_int();
   x_min_ = this->get_parameter("x_min").as_double();
   x_max_ = this->get_parameter("x_max").as_double();
   y_min_ = this->get_parameter("y_min").as_double();
   y_max_ = this->get_parameter("y_max").as_double();
+  grid_resolution_ = this->get_parameter("grid_resolution").as_double();
 }
 
 void PointCloudDensifierNode::onPointCloud(
   const sensor_msgs::msg::PointCloud2::ConstSharedPtr input_msg)
 {
-  // convert ros to pcl
+
+
+  // Measure time
+  auto start_time = std::chrono::high_resolution_clock::now();
+
+
+  // Convert ROS message to PCL point cloud.
   pcl::PointCloud<PointXYZIRC>::Ptr raw_pointcloud_ptr(new pcl::PointCloud<PointXYZIRC>);
   pcl::fromROSMsg(*input_msg, *raw_pointcloud_ptr);
+  RCLCPP_INFO(get_logger(), "Received point cloud with %ld points", raw_pointcloud_ptr->size());
 
+  // -----------------------------
+  // FILTER CURRENT POINT CLOUD (ROI)
+  pcl::PointCloud<PointXYZIRC>::Ptr far_front_pointcloud_ptr(new pcl::PointCloud<PointXYZIRC>);
+  for (const auto & point : raw_pointcloud_ptr->points) {
+    if (point.x > x_min_ && point.x < x_max_ && point.y > y_min_ && point.y < y_max_) {
+      far_front_pointcloud_ptr->push_back(point);
+    }
+  }
+  
+  // Build occupancy grid from the current filtered cloud.
+  pointcloud_densifier::OccupancyGrid occupancy_grid(x_min_, x_max_, y_min_, y_max_, grid_resolution_);
+  occupancy_grid.updateOccupancy(*far_front_pointcloud_ptr);
+
+  // Start with current (static) points.
   pcl::PointCloud<PointXYZIRC>::Ptr combined_pointcloud_ptr(new pcl::PointCloud<PointXYZIRC>);
   *combined_pointcloud_ptr = *raw_pointcloud_ptr;
 
-  RCLCPP_INFO(get_logger(), "Received point cloud with %ld points", raw_pointcloud_ptr->size());
-
-  // Transform and combine previous point clouds
+  // -----------------------------
+  // TRANSFORM AND MERGE PREVIOUS CLOUDS (using occupancy grid filtering)
   for (const auto & previous_pointcloud : previous_pointclouds_) {
     if (!previous_pointcloud.cloud || previous_pointcloud.cloud->empty()) {
       continue;
     }
     geometry_msgs::msg::TransformStamped transform_stamped;
     try {
-      // Convert timestamps to tf2 time
       tf2::TimePoint time_point = tf2::TimePoint(
         std::chrono::nanoseconds(input_msg->header.stamp.nanosec) +
         std::chrono::seconds(input_msg->header.stamp.sec));
       tf2::TimePoint prev_time_point = tf2::TimePoint(
         std::chrono::nanoseconds(previous_pointcloud.header.stamp.nanosec) +
         std::chrono::seconds(previous_pointcloud.header.stamp.sec));
-
       transform_stamped = tf_buffer_->lookupTransform(
         input_msg->header.frame_id,
         time_point,
@@ -112,21 +134,14 @@ void PointCloudDensifierNode::onPointCloud(
         "map"  // fixed frame
       );
     } catch (tf2::TransformException & ex) {
-      RCLCPP_WARN(this->get_logger(), "%s", ex.what());
+      RCLCPP_WARN(get_logger(), "%s", ex.what());
       continue;
     }
-
-
-    // Log transform stamped  
-    RCLCPP_INFO(this->get_logger(), "Transformed point cloud from %s to %s",
+    
+    RCLCPP_INFO(get_logger(), "Transformed point cloud from %s to %s",
       previous_pointcloud.header.frame_id.c_str(), input_msg->header.frame_id.c_str());
-    RCLCPP_INFO(this->get_logger(), "Translation: [%f, %f, %f]",
-      transform_stamped.transform.translation.x,
-      transform_stamped.transform.translation.y,
-      transform_stamped.transform.translation.z);
 
-
-    // Check if transform is valid
+    // Validate and obtain the transformation.
     Eigen::Isometry3d transform_eigen;
     try {
       transform_eigen = tf2::transformToEigen(transform_stamped);
@@ -138,46 +153,48 @@ void PointCloudDensifierNode::onPointCloud(
       RCLCPP_ERROR(get_logger(), "Transform error: %s", ex.what());
       continue;
     }
-
-    // Transform and filter previous point cloud
+    
+    // Transform previous point cloud.
     pcl::PointCloud<PointXYZIRC> transformed_previous_cloud;
     try {
-      PointCloudDensifierNode::transformPointCloudXYZIRC(*previous_pointcloud.cloud, transformed_previous_cloud, transform_eigen.matrix());
+      transformPointCloudXYZIRC(*previous_pointcloud.cloud, transformed_previous_cloud,
+                                 transform_eigen.matrix());
     } catch (const std::exception & ex) {
       RCLCPP_ERROR(get_logger(), "Point cloud transformation failed: %s", ex.what());
       continue;
     }
-    *combined_pointcloud_ptr += transformed_previous_cloud;
-  }
-
-  // Store the current point cloud for future use
-  if (previous_pointclouds_.size() >= num_previous_frames_) {
-    previous_pointclouds_.pop_front();
-  }
-
-  // Filter the point cloud
-  pcl::PointCloud<PointXYZIRC>::Ptr far_front_pointcloud_ptr(new pcl::PointCloud<PointXYZIRC>);
-  for (const auto & point : raw_pointcloud_ptr->points) {
-    if (point.x > x_min_ && point.x < x_max_ && point.y > y_min_ && point.y < y_max_) {
-      far_front_pointcloud_ptr->push_back(point);
+    
+    // Add previous points only if they fall into occupied grid cells.
+    for (const auto & point : transformed_previous_cloud.points) {
+      if (occupancy_grid.isOccupied(point.x, point.y)) {
+        combined_pointcloud_ptr->push_back(point);
+      }
     }
   }
 
+  // -----------------------------
+  // Store the current filtered point cloud for future use.
   StoredPointCloud current_pointcloud;
   current_pointcloud.cloud = far_front_pointcloud_ptr;
   current_pointcloud.header = input_msg->header;
-
-  // Store the current point cloud for future use
+  if (previous_pointclouds_.size() >= static_cast<size_t>(num_previous_frames_)) {
+    previous_pointclouds_.pop_front();
+  }
   previous_pointclouds_.push_back(current_pointcloud);
 
-  // Convert pcl to ros
+  // Convert merged PCL cloud to ROS message.
   sensor_msgs::msg::PointCloud2 output_msg;
   pcl::toROSMsg(*combined_pointcloud_ptr, output_msg);
   output_msg.header = input_msg->header;
 
-  // Publish the combined point cloud
+  // Publish the combined point cloud.
   pointcloud_pub_->publish(output_msg);
   RCLCPP_INFO(get_logger(), "Published point cloud with %ld points", combined_pointcloud_ptr->size());
+
+  // Measure time
+  auto end_time = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> elapsed_time = end_time - start_time;
+  RCLCPP_INFO(get_logger(), "Processing time: %f [s]", elapsed_time.count());
 }
 
 void PointCloudDensifierNode::transformPointCloudXYZIRC(

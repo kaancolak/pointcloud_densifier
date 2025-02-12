@@ -14,7 +14,9 @@ include_directories(
 )
 
 ament_auto_add_library(pointcloud_densifier SHARED
-  src/pointcloud_densifier_node.cpp)
+  src/pointcloud_densifier_node.cpp
+  src/occupancy_grid.cpp    # Added occupancy_grid.cpp to include the OccupancyGrid implementation
+)
 
 target_link_libraries(pointcloud_densifier ${PCL_LIBRARIES})
 

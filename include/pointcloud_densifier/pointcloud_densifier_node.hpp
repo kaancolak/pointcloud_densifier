@@ -17,6 +17,7 @@
 #include <tf2_eigen/tf2_eigen.h>
 #include <Eigen/Geometry>
 #include "autoware_point_types/types.hpp"
+#include "pointcloud_densifier/occupancy_grid.hpp"
 
 namespace pointcloud_densifier
 {
@@ -51,6 +52,7 @@ private:
   double x_max_;
   double y_min_;
   double y_max_;
+  double grid_resolution_;  // new grid resolution parameter
   
 };
 
